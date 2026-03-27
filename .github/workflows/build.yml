@@ -47,7 +47,7 @@ jobs:
             echo "changed=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Upload hash artifact
+      - name: Upload hash artefact
         if: steps.check.outputs.changed == 'true'
         uses: actions/upload-artifact@v7
         with:
@@ -92,15 +92,28 @@ jobs:
       - name: Configure build
         run: |
           cd openwrt
+
+          # Minimal config: only what we need
+          cat <<EOF > .config
+          CONFIG_TARGET_ramips=y
+          CONFIG_TARGET_ramips_mt7621=y
+
+          CONFIG_PACKAGE_luci-theme-argon=y
+          CONFIG_PACKAGE_luci-app-argon-config=y
+          EOF
+
           make defconfig
-          make tools/install -j$(nproc)
-          make toolchain/install -j$(nproc)
+      - name: Download sources
+        run: |
+          cd openwrt
+          make download -j$(nproc)
+
 
       - name: Build packages
         run: |
           cd openwrt
-          make package/luci-theme-argon/compile -j$(nproc) V=s
-          make package/luci-app-argon-config/compile -j$(nproc) V=s
+          make package/luci-theme-argon/compile V=s
+          make package/luci-app-argon-config/compile V=s
 
       - name: Collect packages
         run: |
