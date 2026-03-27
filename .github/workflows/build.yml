@@ -73,6 +73,9 @@ jobs:
           tar --zstd -xf openwrt-sdk-*.tar.zst
           SDK_DIR=$(find . -maxdepth 1 -type d -name "openwrt-sdk-*" | head -n 1)
           mv "$SDK_DIR" sdk
+          cd sdk
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
 
       - name: Add packages
         run: |
