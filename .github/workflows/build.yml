@@ -1,9 +1,12 @@
-name: Build Argon OpenWrt Packages
+name: Build Argon OpenWrt Packages (SDK)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 3 1 * *" # monthly (1st day, 03:00 UTC)
+    - cron: "0 3 1 * *"
+
+permissions:
+  contents: write
 
 jobs:
   check-updates:
@@ -11,11 +14,12 @@ jobs:
     outputs:
       changed: ${{ steps.check.outputs.changed }}
     steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+
       - name: Check upstream changes
         id: check
         run: |
-          set -e
-
           mkdir repos
           cd repos
 
@@ -25,34 +29,27 @@ jobs:
           THEME_HASH=$(git -C luci-theme-argon rev-parse HEAD)
           CONFIG_HASH=$(git -C luci-app-argon-config rev-parse HEAD)
 
-          echo "Theme: $THEME_HASH"
-          echo "Config: $CONFIG_HASH"
+          CURRENT_HASH="${THEME_HASH}_${CONFIG_HASH}"
 
-          # Save previous hashes
-          if [ -f ../last_hash.txt ]; then
-            LAST_HASH=$(cat ../last_hash.txt)
+          if [ -f ../.last_hash.txt ]; then
+            LAST_HASH=$(cat ../.last_hash.txt)
           else
             LAST_HASH=""
           fi
 
-          CURRENT_HASH="${THEME_HASH}_${CONFIG_HASH}"
-
-          echo "Current combined hash: $CURRENT_HASH"
-          echo "Last hash: $LAST_HASH"
-
           if [ "$CURRENT_HASH" != "$LAST_HASH" ]; then
             echo "changed=true" >> $GITHUB_OUTPUT
-            echo "$CURRENT_HASH" > ../last_hash.txt
+            echo "$CURRENT_HASH" > ../.last_hash.txt
           else
             echo "changed=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Upload hash artefact
+      - name: Upload hash
         if: steps.check.outputs.changed == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: hash
-          path: last_hash.txt
+          path: .last_hash.txt
 
   build:
     needs: check-updates
@@ -60,106 +57,103 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
 
       - name: Restore hash
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           name: hash
 
-      - name: Setup build deps
+
+      - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install build-essential clang flex bison g++ gawk \
-          gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev \
-          python3-setuptools rsync swig unzip zlib1g-dev file wget
+          sudo apt install -y build-essential clang flex bison g++ gawk \
+            gcc-multilib g++-multilib gettext git libncurses5-dev \
+            libssl-dev python3-setuptools rsync unzip zlib1g-dev file wget
 
-      - name: Clone OpenWrt
-        run: |
-          git clone https://github.com/openwrt/openwrt.git
-          cd openwrt
-          ./scripts/feeds update -a
-          ./scripts/feeds install -a
 
-      - name: Add Argon packages
+      - name: Download OpenWrt SDK
         run: |
-          cd openwrt/package
+          wget https://downloads.openwrt.org/releases/25.12.1/targets/ramips/mt7621/openwrt-sdk-25.12.1-ramips-mt7621_gcc-14.3.0_musl.Linux-x86_64.tar.zst
+          tar --zstd -xf openwrt-sdk-*.tar.zst
+          mv openwrt-sdk-* sdk
+
+      - name: Add packages
+        run: |
+          cd sdk/package
           git clone https://github.com/jerrykuku/luci-theme-argon.git
           git clone https://github.com/jerrykuku/luci-app-argon-config.git
 
-      - name: Configure build
+
+      - name: Configure
         run: |
-          cd openwrt
-
-          # Minimal config: only what we need
+          cd sdk
           cat <<EOF > .config
-          CONFIG_TARGET_ramips=y
-          CONFIG_TARGET_ramips_mt7621=y
-
           CONFIG_PACKAGE_luci-theme-argon=y
           CONFIG_PACKAGE_luci-app-argon-config=y
           EOF
-
           make defconfig
 
-
-
-      - name: Build packages
+      
+      - name: Build
         run: |
-          cd openwrt
-          make tools/install
-          make toolchain/install
+          cd sdk
           make package/luci-theme-argon/compile V=s
           make package/luci-app-argon-config/compile V=s
-          make package/index
+
 
       - name: Collect packages
         run: |
           mkdir -p output
+          find sdk/bin/packages -type f \( -name "*.ipk" -o -name "*.apk" \) \
+            | grep -E "luci-theme-argon|luci-app-argon-config" \
+            | while read f; do
+                echo "Found: $f"
+                cp "$f" output/
+              done
 
-          find openwrt/bin -type f \( -name "*.ipk" -o -name "*.apk" \) \
-            | grep -E "argon" \
-            | xargs -I {} cp {} output/
+          echo "==== OUTPUT ===="
+          ls -lh output || true
 
-      - name: Extract version info
+
+      - name: Extract version
         id: version
         run: |
-          THEME_VER=$(grep "PKG_VERSION" openwrt/package/luci-theme-argon/Makefile | head -1 | cut -d= -f2)
-          CONFIG_VER=$(grep "PKG_VERSION" openwrt/package/luci-app-argon-config/Makefile | head -1 | cut -d= -f2)
+          THEME_VER=$(grep PKG_VERSION sdk/package/luci-theme-argon/Makefile | cut -d= -f2)
+          CONFIG_VER=$(grep PKG_VERSION sdk/package/luci-app-argon-config/Makefile | cut -d= -f2)
 
-          echo "theme_ver=$THEME_VER" >> $GITHUB_OUTPUT
-          echo "config_ver=$CONFIG_VER" >> $GITHUB_OUTPUT
+          echo "theme=$THEME_VER" >> $GITHUB_OUTPUT
+          echo "config=$CONFIG_VER" >> $GITHUB_OUTPUT
 
-      - name: Rename files with version
+      - name: Rename packages
         run: |
           cd output
-          for f in *argon*.ipk *argon*.apk; do
-            if [[ $f == *theme* ]]; then
-              mv "$f" "luci-theme-argon-${{ steps.version.outputs.theme_ver }}-${f##*.}.${f##*.}"
-            elif [[ $f == *config* ]]; then
-              mv "$f" "luci-app-argon-config-${{ steps.version.outputs.config_ver }}-${f##*.}.${f##*.}"
+          for f in *.ipk *.apk; do
+            if [[ $f == *luci-theme-argon* ]]; then
+              mv "$f" "luci-theme-argon-${{ steps.version.outputs.theme }}.${f##*.}"
+            elif [[ $f == *luci-app-argon-config* ]]; then
+              mv "$f" "luci-app-argon-config-${{ steps.version.outputs.config }}.${f##*.}"
             fi
           done
+
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: argon-${{ github.run_number }}
-          name: Argon Build ${{ github.run_number }}
+          tag_name: argon-${{ steps.version.outputs.theme }}
+          name: Argon ${{ steps.version.outputs.theme }}
           files: output/*
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
-      - name: Save latest hash
-        run: |
-          echo "Saving hash for next run"
-          mv last_hash.txt .last_hash.txt
+      - name: Save hash
+        run: mv .last_hash.txt last_hash.txt
 
       - name: Commit hash
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git add .last_hash.txt || true
-          git commit -m "Update last build hash" || true
+          git add last_hash.txt || true
+          git commit -m "Update hash" || true
           git push || true
