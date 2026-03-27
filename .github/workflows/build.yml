@@ -149,7 +149,7 @@ jobs:
           name: Argon Build ${{ github.run_number }}
           files: output/*
         env:
-          GITHUB_TOKEN: ${{ secrets.TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
       - name: Save latest hash
         run: |
