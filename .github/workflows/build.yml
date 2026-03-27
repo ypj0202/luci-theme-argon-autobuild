@@ -1,0 +1,151 @@
+name: Build Argon OpenWrt Packages
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 1 * *" # monthly (1st day, 03:00 UTC)
+
+jobs:
+  check-updates:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.check.outputs.changed }}
+    steps:
+      - name: Check upstream changes
+        id: check
+        run: |
+          set -e
+
+          mkdir repos
+          cd repos
+
+          git clone --depth=1 https://github.com/jerrykuku/luci-theme-argon.git
+          git clone --depth=1 https://github.com/jerrykuku/luci-app-argon-config.git
+
+          THEME_HASH=$(git -C luci-theme-argon rev-parse HEAD)
+          CONFIG_HASH=$(git -C luci-app-argon-config rev-parse HEAD)
+
+          echo "Theme: $THEME_HASH"
+          echo "Config: $CONFIG_HASH"
+
+          # Save previous hashes
+          if [ -f ../last_hash.txt ]; then
+            LAST_HASH=$(cat ../last_hash.txt)
+          else
+            LAST_HASH=""
+          fi
+
+          CURRENT_HASH="${THEME_HASH}_${CONFIG_HASH}"
+
+          echo "Current combined hash: $CURRENT_HASH"
+          echo "Last hash: $LAST_HASH"
+
+          if [ "$CURRENT_HASH" != "$LAST_HASH" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "$CURRENT_HASH" > ../last_hash.txt
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload hash artifact
+        if: steps.check.outputs.changed == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: hash
+          path: last_hash.txt
+
+  build:
+    needs: check-updates
+    if: needs.check-updates.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+
+      - name: Restore hash
+        uses: actions/download-artifact@v7
+        with:
+          name: hash
+
+      - name: Setup build deps
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            build-essential clang flex bison g++ gawk gcc-multilib \
+            gettext git libncurses-dev libssl-dev python3 python3-distutils \
+            rsync unzip zlib1g-dev file wget
+
+      - name: Clone OpenWrt
+        run: |
+          git clone https://github.com/openwrt/openwrt.git
+          cd openwrt
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Add Argon packages
+        run: |
+          cd openwrt/package
+          git clone https://github.com/jerrykuku/luci-theme-argon.git
+          git clone https://github.com/jerrykuku/luci-app-argon-config.git
+
+      - name: Configure build
+        run: |
+          cd openwrt
+          make defconfig
+
+      - name: Build packages
+        run: |
+          cd openwrt
+          make package/luci-theme-argon/compile -j$(nproc) V=s
+          make package/luci-app-argon-config/compile -j$(nproc) V=s
+
+      - name: Collect packages
+        run: |
+          mkdir -p output
+
+          find openwrt/bin -type f \( -name "*.ipk" -o -name "*.apk" \) \
+            | grep -E "argon" \
+            | xargs -I {} cp {} output/
+
+      - name: Extract version info
+        id: version
+        run: |
+          THEME_VER=$(grep "PKG_VERSION" openwrt/package/luci-theme-argon/Makefile | head -1 | cut -d= -f2)
+          CONFIG_VER=$(grep "PKG_VERSION" openwrt/package/luci-app-argon-config/Makefile | head -1 | cut -d= -f2)
+
+          echo "theme_ver=$THEME_VER" >> $GITHUB_OUTPUT
+          echo "config_ver=$CONFIG_VER" >> $GITHUB_OUTPUT
+
+      - name: Rename files with version
+        run: |
+          cd output
+          for f in *argon*.ipk *argon*.apk; do
+            if [[ $f == *theme* ]]; then
+              mv "$f" "luci-theme-argon-${{ steps.version.outputs.theme_ver }}-${f##*.}.${f##*.}"
+            elif [[ $f == *config* ]]; then
+              mv "$f" "luci-app-argon-config-${{ steps.version.outputs.config_ver }}-${f##*.}.${f##*.}"
+            fi
+          done
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: argon-${{ github.run_number }}
+          name: Argon Build ${{ github.run_number }}
+          files: output/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Save latest hash
+        run: |
+          echo "Saving hash for next run"
+          mv last_hash.txt .last_hash.txt
+
+      - name: Commit hash
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add .last_hash.txt || true
+          git commit -m "Update last build hash" || true
+          git push || true
