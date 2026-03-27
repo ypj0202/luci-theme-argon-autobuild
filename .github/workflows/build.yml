@@ -70,11 +70,10 @@ jobs:
 
       - name: Setup build deps
         run: |
-          sudo apt update
-              sudo apt install -y \
-              build-essential ccache ecj file g++ gawk gettext git java-propose-classpath \
-              libncurses5-dev libssl-dev python3 python3-distutils python3-setuptools \
-              unzip wget xsltproc zlib1g-dev sed gawk
+          sudo apt install -y \
+          build-essential ccache ecj file g++ gawk gettext git java-propose-classpath \
+          libncurses5-dev libssl-dev python3 python3-setuptools python3-distutils-extra \
+          unzip wget xsltproc zlib1g-dev sed gawk
 
       - name: Clone OpenWrt
         run: |
