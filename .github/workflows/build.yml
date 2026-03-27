@@ -102,18 +102,17 @@ jobs:
           EOF
 
           make defconfig
-      # - name: Download sources
-      #   run: |
-      #     cd openwrt
-      #     make download -j$(nproc)
+
 
 
       - name: Build packages
         run: |
           cd openwrt
+          make tools/install
           make toolchain/install
           make package/luci-theme-argon/compile V=s
           make package/luci-app-argon-config/compile V=s
+          make package/index
 
       - name: Collect packages
         run: |
