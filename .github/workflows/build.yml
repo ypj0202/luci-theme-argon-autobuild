@@ -71,7 +71,8 @@ jobs:
         run: |
           wget https://downloads.openwrt.org/releases/25.12.1/targets/ramips/mt7621/openwrt-sdk-25.12.1-ramips-mt7621_gcc-14.3.0_musl.Linux-x86_64.tar.zst
           tar --zstd -xf openwrt-sdk-*.tar.zst
-          mv openwrt-sdk-* sdk
+          SDK_DIR=$(find . -maxdepth 1 -type d -name "openwrt-sdk-*" | head -n 1)
+          mv "$SDK_DIR" sdk
 
       - name: Add packages
         run: |
